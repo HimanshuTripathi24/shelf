@@ -513,7 +513,7 @@ export default function Home() {
       </main>
 
       <footer className="ln-footer">
-        ⬡ SHELF · Your personal light novel archive · {new Date().getFullYear()}
+        ⬡ SHELF · Your personal light novel archive · 2025
       </footer>
     </>
   );
