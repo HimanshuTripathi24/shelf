@@ -278,7 +278,12 @@ function NovelDetailContent() {
 
   // ── Library actions ─────────────────────────────────────────────────────────
   async function handleAddToLibrary() {
-    if (!userId || !novelMeta || !sourceUrl) return;
+    if (!novelMeta || !sourceUrl) return;
+    if (!userId) {
+      // Guest — redirect to sign-in, return here after
+      router.push(`/sign-in?redirect=${encodeURIComponent(`/novel?url=${encodeURIComponent(sourceUrl)}`)}`);
+      return;
+    }
     setAddingToLibrary(true);
     const { data, error } = await supabase.from("novels").insert([{
       user_id: userId, title: novelMeta.title, author: novelMeta.author || "",
@@ -530,7 +535,7 @@ function NovelDetailContent() {
                 </>
               ) : (
                 <button className="btn-outline" onClick={handleAddToLibrary} disabled={addingToLibrary}>
-                  {addingToLibrary ? "Adding..." : "+ Add to Library"}
+                  {addingToLibrary ? "Adding..." : userId ? "+ Add to Library" : "Sign In to Add"}
                 </button>
               )}
             </div>
