@@ -24,6 +24,14 @@ interface ApiResult {
 
 const SOURCES = ["All", "NovelFull", "AllNovelFull", "NovelBin", "NovelCool", "NovelHall", "NovLove"];
 
+const GENRES = [
+  "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Harem",
+  "Historical", "Horror", "Josei", "Martial Arts", "Mature",
+  "Mecha", "Mystery", "Psychological", "Romance", "School Life",
+  "Sci-fi", "Seinen", "Shoujo", "Shounen", "Slice of Life",
+  "Smut", "Sports", "Supernatural", "Tragedy", "Wuxia", "Xianxia",
+];
+
 function SearchContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -34,6 +42,7 @@ function SearchContent() {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [activeSource, setActiveSource] = useState("All");
+  const [activeGenre, setActiveGenre] = useState<string | null>(null);
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
 
   const doSearch = useCallback(async (q: string) => {
@@ -43,6 +52,7 @@ function SearchContent() {
     setResults([]);
     setActiveSource("All");
     setSourceCounts({});
+    setActiveGenre(null);
 
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
@@ -76,6 +86,15 @@ function SearchContent() {
     if (initialQuery) doSearch(initialQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleGenreClick = (genre: string) => {
+    const newGenre = activeGenre === genre ? null : genre;
+    setActiveGenre(newGenre);
+    const q = newGenre || genre;
+    setQuery(q);
+    router.push(`/search?q=${encodeURIComponent(q)}`);
+    doSearch(q);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -169,6 +188,19 @@ function SearchContent() {
           animation: spin 0.8s linear infinite;
         }
 
+        /* ── Genre pills ── */
+        .genre-section { margin-bottom: 32px; }
+        .genre-label { font-size: 11px; letter-spacing: 0.18em; color: rgba(255,255,255,0.3); text-transform: uppercase; margin-bottom: 12px; }
+        .genre-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .genre-pill {
+          background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09);
+          color: rgba(255,255,255,0.5); font-family: Georgia,serif; font-size: 12px;
+          letter-spacing: 0.06em; padding: 6px 14px; border-radius: 20px;
+          cursor: pointer; transition: all 0.15s; white-space: nowrap;
+        }
+        .genre-pill:hover { border-color: rgba(200,169,110,0.5); color: #c8a96e; background: rgba(200,169,110,0.06); }
+        .genre-pill.active { background: rgba(200,169,110,0.15); border-color: #c8a96e; color: #c8a96e; }
+
         @media (max-width: 600px) {
           .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px; }
         }
@@ -177,6 +209,20 @@ function SearchContent() {
       <div className="page">
         <SiteNav />
         <h1 className="heading">Search Light Novels</h1>
+
+        {/* Genre pills — shown when no search yet or always */}
+        <div className="genre-section">
+          <p className="genre-label">Browse by genre</p>
+          <div className="genre-grid">
+            {GENRES.map(g => (
+              <button
+                key={g}
+                className={`genre-pill${activeGenre === g ? " active" : ""}`}
+                onClick={() => handleGenreClick(g)}
+              >{g}</button>
+            ))}
+          </div>
+        </div>
 
         <form onSubmit={handleSubmit} className="search-form">
           <input
