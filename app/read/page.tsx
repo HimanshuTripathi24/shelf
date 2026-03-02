@@ -54,6 +54,7 @@ function ReaderContent() {
   const [sidebarPage,     setSidebarPage]     = useState(1);
   const [sidebarTotalPages, setSidebarTotalPages] = useState(1);
   const [markedRead,   setMarkedRead]   = useState(false);
+  const [hideUI,       setHideUI]       = useState(false);
   const [prevUrl,      setPrevUrl]      = useState<string | null>(null);
   const [nextUrl,      setNextUrl]      = useState<string | null>(null);
 
@@ -174,6 +175,25 @@ function ReaderContent() {
     return () => window.removeEventListener('keydown', handleKey);
   }, [prevUrl, nextUrl, chapterNum]);
 
+
+  // ── Hide/show UI on mobile scroll ──────────────────────────────────────────
+  useEffect(() => {
+    let lastY = window.scrollY;
+    function handleScroll() {
+      // Only apply on mobile (≤768px)
+      if (window.innerWidth > 768) return;
+      const currentY = window.scrollY;
+      if (currentY > lastY + 5) {
+        setHideUI(true);   // scrolling down — hide
+      } else if (currentY < lastY - 5) {
+        setHideUI(false);  // scrolling up — show
+      }
+      lastY = currentY;
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
   function navigateChapter(url: string, num: number) {
     const params = new URLSearchParams({
       url,
@@ -247,17 +267,34 @@ function ReaderContent() {
   return (
     <div style={{ background: theme.bg, color: theme.text, minHeight: '100vh', fontFamily: settings.font_family, transition: 'background 0.3s, color 0.3s' }}>
 
-      {/* Top bar */}
-      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50, background: theme.overlay, backdropFilter: 'blur(12px)', borderBottom: `1px solid ${theme.border}`, height: '52px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.5rem', gap: '1rem' }}>
+      {/* Top bar — hides on mobile scroll down, shows on scroll up */}
+      <style>{`
+        @media (max-width: 768px) {
+          .reader-topbar, .reader-bottom { transition: transform 0.3s ease; }
+          .reader-topbar button, .reader-topbar div { font-size: 16px !important; }
+          .reader-topbar .rdr-label { font-size: 11px !important; }
+        }
+      `}</style>
+      <div
+        className="reader-topbar"
+        style={{
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50,
+          background: theme.overlay, backdropFilter: 'blur(12px)',
+          borderBottom: `1px solid ${theme.border}`, height: '52px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '0 1.5rem', gap: '1rem',
+          transform: hideUI ? 'translateY(-100%)' : 'translateY(0)',
+          transition: 'transform 0.3s ease',
+        }}>
         <button onClick={goBack}
-          style={{ background: 'none', border: 'none', color: theme.muted, cursor: 'pointer', fontSize: '0.8rem', letterSpacing: '0.08em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '0.4rem', transition: 'color 0.2s', flexShrink: 0 }}
-          onMouseEnter={e => (e.currentTarget.style.color = theme.accent)}
-          onMouseLeave={e => (e.currentTarget.style.color = theme.muted)}
+          style={{ background: 'none', border: `1px solid ${theme.border}`, color: theme.muted, cursor: 'pointer', fontSize: '0.8rem', letterSpacing: '0.08em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '0.4rem', transition: 'all 0.2s', flexShrink: 0, padding: '0.3rem 0.7rem', borderRadius: '4px' }}
+          onMouseEnter={e => { e.currentTarget.style.color = theme.accent; e.currentTarget.style.borderColor = theme.accent; }}
+          onMouseLeave={e => { e.currentTarget.style.color = theme.muted; e.currentTarget.style.borderColor = theme.border; }}
         >
           ← Back
         </button>
         <div style={{ textAlign: 'center', overflow: 'hidden', flex: 1 }}>
-          <div style={{ fontSize: '0.7rem', color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '1px' }}>{novelTitle}</div>
+          <div className="rdr-label" style={{ fontSize: '0.7rem', color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '1px' }}>{novelTitle}</div>
           <div style={{ fontSize: '0.85rem', color: theme.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{chapterTitle || `Chapter ${chapterNum}`}</div>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
@@ -388,7 +425,17 @@ function ReaderContent() {
 
       {/* Bottom nav */}
       {!loading && (
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: theme.overlay, backdropFilter: 'blur(12px)', borderTop: `1px solid ${theme.border}`, padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
+        <div
+          className="reader-bottom"
+          style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0,
+            background: theme.overlay, backdropFilter: 'blur(12px)',
+            borderTop: `1px solid ${theme.border}`,
+            padding: '0.75rem 1.5rem',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem',
+            transform: hideUI ? 'translateY(100%)' : 'translateY(0)',
+            transition: 'transform 0.3s ease',
+          }}>
           <NavBtn label="← Previous" disabled={!prevUrl} onClick={() => prevUrl && navigateChapter(prevUrl, chapterNum - 1)} accent={theme.accent} muted={theme.muted} border={theme.border} />
           <div style={{ fontSize: '0.75rem', color: theme.muted, letterSpacing: '0.08em' }}>Ch. {chapterNum}</div>
           <NavBtn label="Next →" disabled={!nextUrl} onClick={() => nextUrl && navigateChapter(nextUrl, chapterNum + 1)} accent={theme.accent} muted={theme.muted} border={theme.border} primary />
