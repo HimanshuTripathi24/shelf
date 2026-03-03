@@ -360,7 +360,7 @@ function ReaderContent() {
               <div style={{ fontSize: '0.7rem', color: theme.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: '0.5rem' }}>Chapter {chapterNum}</div>
               <h1 style={{ fontSize: '1.4rem', fontWeight: 'normal', color: theme.text, lineHeight: 1.4, margin: 0 }}>{chapterTitle}</h1>
             </div>
-            <div style={{ fontSize: `${settings.font_size}px`, lineHeight: settings.line_height, fontFamily: settings.font_family, color: theme.text }} dangerouslySetInnerHTML={{ __html: formatContent(content) }} />
+            <div style={{ fontSize: `${settings.font_size}px`, lineHeight: settings.line_height, fontFamily: settings.font_family, color: theme.text, overflowWrap: 'break-word', wordBreak: 'break-word', minWidth: 0 }} dangerouslySetInnerHTML={{ __html: formatContent(content) }} />
             <div ref={bottomRef} style={{ height: '1px', marginTop: '4rem' }} />
             {markedRead && (
               <div style={{ textAlign: 'center', padding: '1rem', color: theme.accent, fontSize: '0.75rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>✓ Chapter marked as read</div>
@@ -451,12 +451,19 @@ function NavBtn({ label, disabled, onClick, accent, muted, border, primary }: { 
   );
 }
 
+function stripTranslatorLines(html: string): string {
+  return html.replace(/<p[^>]*>[^<]*(translated by|translator|tlc:|tl:|edited by|editor|proofreader|pr:|gravitas novelus|wuxiaworld|webnovel)[^<]*<\/p>/gi, '');
+}
+
 function formatContent(raw: string): string {
   if (!raw) return '';
+  const ps = 'margin:0 0 1.5em 0;overflow-wrap:break-word;word-break:break-word;';
   if (raw.includes('<p>') || raw.includes('<p ')) {
-    return raw.replace(/<p>/gi, '<p style="margin:0 0 1.5em 0;">').replace(/<p /gi, '<p style="margin:0 0 1.5em 0;" ');
+    return stripTranslatorLines(
+      raw.replace(/<p>/gi, `<p style="${ps}">`).replace(/<p /gi, `<p style="${ps}" `)
+    );
   }
-  return raw.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).map(p => `<p style="margin:0 0 1.5em 0;">${p.replace(/\n/g, '<br/>')}</p>`).join('');
+  return raw.split(/\n{2,}/).map(p => p.trim()).filter(Boolean).map(p => `<p style="${ps}">${p.replace(/\n/g, '<br/>')}</p>`).join('');
 }
 
 export default function ReaderPage() {
