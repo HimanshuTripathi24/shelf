@@ -72,33 +72,28 @@ function ReaderContent() {
     }
   }
 
-  // ── Load settings
+  // ── Load settings from localStorage (device-local)
   useEffect(() => {
-    async function loadSettings() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase.from('reader_settings').select('*').eq('user_id', user.id).single();
-      if (data) {
+    try {
+      const saved = localStorage.getItem('shelf_reader_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
         setSettings({
-          font_family: data.font_family || DEFAULT_SETTINGS.font_family,
-          font_size:   data.font_size   || DEFAULT_SETTINGS.font_size,
-          line_height: data.line_height || DEFAULT_SETTINGS.line_height,
-          theme:       data.theme       || DEFAULT_SETTINGS.theme,
+          font_family: parsed.font_family || DEFAULT_SETTINGS.font_family,
+          font_size:   parsed.font_size   || DEFAULT_SETTINGS.font_size,
+          line_height: parsed.line_height || DEFAULT_SETTINGS.line_height,
+          theme:       parsed.theme       || DEFAULT_SETTINGS.theme,
         });
       }
-    }
-    loadSettings();
+    } catch { /* ignore */ }
   }, []);
 
-  // ── Save settings
-  const saveSettings = useCallback(async (s: ReaderSettings) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase.from('reader_settings').upsert(
-      { user_id: user.id, ...s, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id' }
-    );
-  }, [supabase]);
+  // ── Save settings to localStorage (device-local)
+  const saveSettings = useCallback((s: ReaderSettings) => {
+    try {
+      localStorage.setItem('shelf_reader_settings', JSON.stringify(s));
+    } catch { /* ignore */ }
+  }, []);
 
   const updateSetting = useCallback(<K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
     setSettings(prev => {
