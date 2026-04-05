@@ -210,7 +210,6 @@ function SearchContent() {
         <SiteNav />
         <h1 className="heading">Search Light Novels</h1>
 
-        {/* Genre pills — shown when no search yet or always */}
         <div className="genre-section">
           <p className="genre-label">Browse by genre</p>
           <div className="genre-grid">
@@ -318,6 +317,7 @@ function SearchContent() {
   );
 }
 
+// Ensure this bottom block makes it into the file!
 export default function SearchPage() {
   return (
     <Suspense fallback={<div style={{ background: "#080808", minHeight: "100vh" }} />}>
@@ -325,4 +325,3 @@ export default function SearchPage() {
     </Suspense>
   );
 }
-//hello

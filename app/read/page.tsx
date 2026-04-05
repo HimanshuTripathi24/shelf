@@ -129,7 +129,7 @@ function ReaderContent() {
     fetchChapter();
   }, [chapterUrl]);
 
-  // ── Mark read at bottom
+  // ── Mark read at bottom (UPDATED WITH AUTO-STATUS LOGIC)
   useEffect(() => {
     if (!bottomRef.current || markedRead || !content) return;
     const observer = new IntersectionObserver(async ([entry]) => {
@@ -137,18 +137,51 @@ function ReaderContent() {
       setMarkedRead(true);
       const { data: { user } } = await supabase.auth.getUser();
       if (!user || !novelId) return;
-      await supabase.from('reading_progress').upsert(
-        { user_id: user.id, novel_id: novelId, chapter_number: chapterNum, last_read_at: new Date().toISOString() },
-        { onConflict: 'user_id,novel_id' }
-      );
-      const { data: novel } = await supabase.from('novels').select('current_chapter').eq('id', novelId).single();
-      if (novel && chapterNum > (novel.current_chapter || 0)) {
-        await supabase.from('novels').update({ current_chapter: chapterNum, updated_at: new Date().toISOString() }).eq('id', novelId);
+
+      try {
+        // 1. Update fine-grained reading progress
+        await supabase.from('reading_progress').upsert(
+          { user_id: user.id, novel_id: novelId, chapter_number: chapterNum, last_read_at: new Date().toISOString() },
+          { onConflict: 'user_id,novel_id' }
+        );
+
+        // 2. Fetch current state to determine if updates are needed
+        const { data: novel, error } = await supabase
+          .from('novels')
+          .select('current_chapter, status')
+          .eq('id', novelId)
+          .single();
+
+        if (!error && novel) {
+          const updates: any = {};
+          let needsUpdate = false;
+
+          // Update high-water mark for current chapter
+          if (chapterNum > (novel.current_chapter || 0)) {
+            updates.current_chapter = chapterNum;
+            needsUpdate = true;
+          }
+
+          // AUTO-STATUS: Force status to "reading" if they just finished a chapter
+          if (novel.status !== 'reading') {
+            updates.status = 'reading';
+            needsUpdate = true;
+          }
+
+          // Only run database update if something actually changed
+          if (needsUpdate) {
+            updates.updated_at = new Date().toISOString();
+            await supabase.from('novels').update(updates).eq('id', novelId);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to mark chapter as read:", err);
       }
     }, { threshold: 0.5 });
+    
     observer.observe(bottomRef.current);
     return () => observer.disconnect();
-  }, [content, markedRead, novelId, chapterNum]);
+  }, [content, markedRead, novelId, chapterNum, supabase]);
 
   // ── Close panel on outside click
   useEffect(() => {
