@@ -99,8 +99,8 @@ async function getNovelPool(baseUrl: string, pagesToFetch: number = 3) {
 }
 
 function getRandomSelection<T>(array: T[], limit: number): T[] {
-  const shuffled = [...array].sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, limit);
+  // Just take the first N — no randomness needed, avoids prerender restrictions
+  return array.slice(0, limit);
 }
 
 
