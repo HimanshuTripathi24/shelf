@@ -269,7 +269,7 @@ function ReaderContent() {
         for (const d of results) chapters = [...chapters, ...(d.chapters || [])];
       }
 
-      setSidebarChapters(chapters);
+      setSidebarChapters(chapters.map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) })));
       setSidebarPage(loadUpTo);
       setTimeout(() => {
         const el = sidebarRef.current?.querySelector('[data-current="true"]') as HTMLElement | null;
@@ -286,7 +286,7 @@ function ReaderContent() {
     try {
       const res = await fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=${nextPage}`);
       const data = await res.json();
-      setSidebarChapters(prev => [...prev, ...(data.chapters || [])]);
+      setSidebarChapters(prev => [...prev, ...(data.chapters || []).map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) }))]);
       setSidebarPage(nextPage);
     } catch { /* silent */ }
     setSidebarLoading(false);
