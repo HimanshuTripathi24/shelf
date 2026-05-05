@@ -52,6 +52,7 @@ async function parseNovelFullStyle(url: string, page: number, req: NextRequest) 
 
   const cleanTitle = (t: string) =>
     t.replace(/\s*[\|\-–]\s*.*/g, "")
+     .replace(/^read\s+/i, "")
      .replace(/\s*(novel\s*)?(online\s*)?(free\s*)?$/i, "")
      .trim();
   const titleFromOg = $1('meta[property="og:title"]').attr("content")?.trim() || "";
@@ -85,7 +86,9 @@ async function parseNovelFullStyle(url: string, page: number, req: NextRequest) 
     $("ul.list-chapter li a, .list-chapter li a, #list-chapter li a").each((_, el) => {
       const href = $(el).attr("href") || "";
       const chTitle = $(el).text().trim();
+      // Skip pagination links (href contains ?page= or #) and noise text
       if (!href || !chTitle || isPaginationNoise(chTitle)) return;
+      if (/[?#]/.test(href) && /[?&]page=/.test(href)) return;
       result.push({
         number: offset + result.length + 1,
         title: chTitle,
@@ -102,6 +105,8 @@ async function parseNovelFullStyle(url: string, page: number, req: NextRequest) 
   if (secondSourcePage <= sourceTotal) {
     const { html: html2 } = await fetchNovelFullSourcePage(url, secondSourcePage, headers);
     const $2 = cheerio.load(html2);
+    // Use actual count from page1, not the fixed CHAPTERS_PER_PAGE constant,
+    // so chapter numbers stay accurate even when a source page has fewer entries
     const offset2 = offset1 + chaptersFromPage1.length;
     chaptersFromPage2 = extractChapters($2, offset2, url);
   }
