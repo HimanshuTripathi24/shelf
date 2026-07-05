@@ -51,7 +51,12 @@ function ReaderContent() {
   const [showSidebar,  setShowSidebar]  = useState(false);
   const [sidebarChapters, setSidebarChapters] = useState<{number:number;title:string;url:string}[]>([]);
   const [sidebarLoading,  setSidebarLoading]  = useState(false);
-  const [sidebarPage,     setSidebarPage]     = useState(1);
+  // Track the loaded range as [min, max] rather than a single page count —
+  // the sidebar now opens centered on the current chapter's page instead of
+  // always starting from page 1, so it needs to be able to load earlier
+  // pages too, not just later ones.
+  const [sidebarMinPage,  setSidebarMinPage]  = useState(0);
+  const [sidebarMaxPage,  setSidebarMaxPage]  = useState(0);
   const [sidebarTotalPages, setSidebarTotalPages] = useState(1);
   const [markedRead,   setMarkedRead]   = useState(false);
   const [hideUI,       setHideUI]       = useState(false);
@@ -248,29 +253,20 @@ function ReaderContent() {
     if (!novelUrl) return;
     setSidebarLoading(true);
     try {
-      // First fetch page 1 to get totalPages
-      const res1 = await fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=1`);
-      const data1 = await res1.json();
-      const totalPages = data1.totalPages || 1;
-      setSidebarTotalPages(totalPages);
-
-      // Load all pages from 1 up to (current chapter's page + 1)
+      // Fetch only the page containing the current chapter — one call.
+      // totalPages comes back in this same response (the pagination widget
+      // is present on every page, not just page 1), so there's no need for
+      // a separate "always fetch page 1 first" request either.
       const currentPage = Math.max(1, Math.ceil(chapterNum / 100));
-      const loadUpTo = Math.min(currentPage + 1, totalPages);
+      const res = await fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=${currentPage}`);
+      const data = await res.json();
+      const totalPages = data.totalPages || 1;
 
-      let chapters = data1.chapters || [];
+      setSidebarTotalPages(totalPages);
+      setSidebarChapters((data.chapters || []).map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) })));
+      setSidebarMinPage(currentPage);
+      setSidebarMaxPage(currentPage);
 
-      // Fetch pages 2..loadUpTo in parallel
-      if (loadUpTo > 1) {
-        const pageNums = Array.from({ length: loadUpTo - 1 }, (_, i) => i + 2);
-        const results = await Promise.all(
-          pageNums.map(p => fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=${p}`).then(r => r.json()))
-        );
-        for (const d of results) chapters = [...chapters, ...(d.chapters || [])];
-      }
-
-      setSidebarChapters(chapters.map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) })));
-      setSidebarPage(loadUpTo);
       setTimeout(() => {
         const el = sidebarRef.current?.querySelector('[data-current="true"]') as HTMLElement | null;
         el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -280,14 +276,27 @@ function ReaderContent() {
   }
 
   async function loadMoreSidebarChapters() {
-    if (!novelUrl || sidebarPage >= sidebarTotalPages) return;
-    const nextPage = sidebarPage + 1;
+    if (!novelUrl || sidebarLoading || sidebarMaxPage >= sidebarTotalPages) return;
+    const nextPage = sidebarMaxPage + 1;
     setSidebarLoading(true);
     try {
       const res = await fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=${nextPage}`);
       const data = await res.json();
       setSidebarChapters(prev => [...prev, ...(data.chapters || []).map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) }))]);
-      setSidebarPage(nextPage);
+      setSidebarMaxPage(nextPage);
+    } catch { /* silent */ }
+    setSidebarLoading(false);
+  }
+
+  async function loadEarlierSidebarChapters() {
+    if (!novelUrl || sidebarLoading || sidebarMinPage <= 1) return;
+    const prevPage = sidebarMinPage - 1;
+    setSidebarLoading(true);
+    try {
+      const res = await fetch(`/api/novel?url=${encodeURIComponent(novelUrl)}&page=${prevPage}`);
+      const data = await res.json();
+      setSidebarChapters(prev => [...(data.chapters || []).map((c: {number:number|string;title:string;url:string}) => ({ ...c, number: Number(c.number) })), ...prev]);
+      setSidebarMinPage(prevPage);
     } catch { /* silent */ }
     setSidebarLoading(false);
   }
@@ -418,6 +427,16 @@ function ReaderContent() {
           {!novelUrl && (
             <div style={{ padding: '2rem', textAlign: 'center', color: theme.muted, fontSize: '0.8rem' }}>No novel URL available.</div>
           )}
+          {/* Load earlier */}
+          {sidebarChapters.length > 0 && sidebarMinPage > 1 && (
+            <button
+              onClick={loadEarlierSidebarChapters}
+              disabled={sidebarLoading}
+              style={{ display: 'block', width: '100%', padding: '12px', background: 'none', border: 'none', borderBottom: `1px solid ${theme.border}`, color: sidebarLoading ? theme.muted : theme.accent, cursor: sidebarLoading ? 'not-allowed' : 'pointer', fontSize: '0.75rem', letterSpacing: '0.1em', fontFamily: 'inherit' }}
+            >
+              {sidebarLoading ? 'Loading…' : `Load Earlier (${sidebarMinPage - 1}/${sidebarTotalPages})`}
+            </button>
+          )}
           {sidebarChapters.map(ch => (
             <button
               key={ch.number}
@@ -439,13 +458,13 @@ function ReaderContent() {
             </button>
           ))}
           {/* Load more */}
-          {sidebarChapters.length > 0 && sidebarPage < sidebarTotalPages && (
+          {sidebarChapters.length > 0 && sidebarMaxPage < sidebarTotalPages && (
             <button
               onClick={loadMoreSidebarChapters}
               disabled={sidebarLoading}
               style={{ display: 'block', width: '100%', padding: '12px', background: 'none', border: 'none', borderTop: `1px solid ${theme.border}`, color: sidebarLoading ? theme.muted : theme.accent, cursor: sidebarLoading ? 'not-allowed' : 'pointer', fontSize: '0.75rem', letterSpacing: '0.1em', fontFamily: 'inherit' }}
             >
-              {sidebarLoading ? 'Loading…' : `Load More (${sidebarPage}/${sidebarTotalPages})`}
+              {sidebarLoading ? 'Loading…' : `Load More (${sidebarMaxPage + 1}/${sidebarTotalPages})`}
             </button>
           )}
         </div>
