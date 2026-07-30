@@ -28,9 +28,9 @@ import { NextRequest, NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import { createClient } from "@supabase/supabase-js";
 
-// Force the Node runtime — we need full control over fetch/headers/timeouts
-// and AbortController behavior that the Edge runtime doesn't guarantee.
-export const runtime = "nodejs";
+// Note: no `export const runtime = "nodejs"` here — Node.js is already the
+// default runtime for API routes (Edge requires explicitly opting in), and
+// declaring it explicitly conflicts with `cacheComponents` in next.config.
 
 const CHAPTERS_PER_PAGE = 100;
 const NOVELFULL_SOURCE_PAGES_PER_OUR_PAGE = 2;
