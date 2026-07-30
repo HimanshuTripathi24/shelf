@@ -36,64 +36,36 @@ function proxiedUrl(coverUrl: string, sourceUrl?: string): string {
 
 // ─── Novel Pool & Randomizer Engine ───────────────────────────────────────────
 
-async function getNovelPool(baseUrl: string, pagesToFetch: number = 3) {
-  let pool: { title: string; cover_url: string; source_url: string; chapter: string }[] = [];
-  
+async function getLNPPool(listUrl: string) {
+  type Novel = { title: string; cover_url: string; source_url: string; chapter: string };
+  let pool: Novel[] = [];
   try {
-    const urls = Array.from({ length: pagesToFetch }, (_, i) => {
-      const pageNum = i + 1;
-      return pageNum === 1 ? baseUrl : `${baseUrl}?page=${pageNum}`;
+    const res = await fetch(listUrl, {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      next: { revalidate: 3600 },
+    });
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    // LNP list pages use .novel-item cards
+    $(".novel-item, .list-novel .row, .book-item").each((_, el) => {
+      const a = $(el).find("h3 a, h4 a, .novel-title a, .book-name a").first();
+      const title = a.text().trim();
+      const href = a.attr("href") || $(el).find("a").first().attr("href") || "";
+      const cover = $(el).find("img").first().attr("src") || $(el).find("img").first().attr("data-src") || "";
+      const chapter = $(el).find(".chapter a, .latest-chapter a, .text-info a").first().text().trim() || "Latest";
+      if (title && href) {
+        const source_url = href.startsWith("http") ? href : `https://lightnovelpub.me${href}`;
+        pool.push({ title, cover_url: cover, source_url, chapter });
+      }
     });
 
-    const htmlResponses = await Promise.all(
-      urls.map(url => 
-        fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0" },
-          next: { revalidate: 3600 } 
-        }).then(res => res.ok ? res.text() : "").catch(() => "")
-      )
-    );
-
-    for (const html of htmlResponses) {
-      if (!html) continue;
-      const $ = cheerio.load(html);
-      
-      $(".list-truyen .row").each((_, el) => {
-        const titleEl = $(el).find("h3.truyen-title a");
-        const title = titleEl.text().trim();
-        const link = titleEl.attr("href") || "";
-        
-        const imgEl = $(el).find("img");
-        const cover = imgEl.attr("data-src") || imgEl.attr("src") || "";
-        
-        let chapter = $(el).find(".text-info a").first().text().trim();
-        if (!chapter) chapter = $(el).find(".text-info").first().text().trim();
-        chapter = chapter.replace(/\s+/g, " ");
-        if (!chapter || chapter.length > 25) chapter = "Latest";
-        
-        if (title && link) {
-          pool.push({
-            title,
-            cover_url: cover.startsWith("http") ? cover : `https://novelfull.net${cover}`,
-            source_url: link.startsWith("http") ? link : `https://novelfull.net${link}`,
-            chapter
-          });
-        }
-      });
-    }
-
-    const uniquePool = [];
-    const seen = new Set();
-    for (const novel of pool) {
-      if (!seen.has(novel.source_url)) {
-        seen.add(novel.source_url);
-        uniquePool.push(novel);
-      }
-    }
-
-    return uniquePool;
+    // Deduplicate
+    const seen = new Set<string>();
+    pool = pool.filter(n => { if (seen.has(n.source_url)) return false; seen.add(n.source_url); return true; });
+    return pool;
   } catch (err) {
-    console.error(`Failed to fetch pool for ${baseUrl}:`, err);
+    console.error("LNP pool fetch failed:", err);
     return [];
   }
 }
@@ -190,7 +162,7 @@ function Hero() {
       <div className="ln-hero-content">
         <div className="ln-hero-left">
           <div className="ln-hero-label">✦ YOUR READING UNIVERSE</div>
-          <h1 className="ln-hero-title">Track &amp;<br />Read Light<br />Novels</h1>
+          <h1 className="ln-hero-title">Track &<br />Read Light<br />Novels</h1>
           <div className="ln-hero-synopsis">Search thousands of light novels from top sources. Track your progress, sync across all your devices, and read anywhere.</div>
           <div className="ln-hero-actions">
             <Link href="/search" className="ln-cta-btn">SEARCH NOVELS <span>→</span></Link>
@@ -347,7 +319,7 @@ async function LatestReleases() {
 // ─── 2. Trending Novels (Fluid Library Proportions) ───────────────────────────
 
 async function TrendingNovels() {
-  const pool = await getNovelPool("https://novelfull.net/hot-novel", 4);
+  const pool = await getLNPPool("https://lightnovelpub.me/list/most-popular-novels/");
   if (!pool || pool.length === 0) return null;
 
   const randomNovels = getRandomSelection(pool, 14);
@@ -364,7 +336,7 @@ async function TrendingNovels() {
           <Link key={n.source_url} href={`/novel?url=${encodeURIComponent(n.source_url)}`} className="ln-card">
             <div className="ln-card-img">
               {n.cover_url ? (
-                <img src={proxiedUrl(n.cover_url, n.source_url)} alt={n.title} />
+                <img src={n.cover_url} alt={n.title} />
               ) : (
                 <div className="ln-card-no-img"><span className="ln-card-art-text">{n.title.slice(0, 2).toUpperCase()}</span></div>
               )}
@@ -382,7 +354,7 @@ async function TrendingNovels() {
 // ─── 3. Completed Novels (Fluid Library Proportions) ──────────────────────────
 
 async function CompletedNovels() {
-  const pool = await getNovelPool("https://novelfull.net/completed-novel", 4);
+  const pool = await getLNPPool("https://lightnovelpub.me/list/completed-novels/");
   if (!pool || pool.length === 0) return null;
 
   const randomNovels = getRandomSelection(pool, 14);
@@ -398,7 +370,7 @@ async function CompletedNovels() {
           <Link key={n.source_url} href={`/novel?url=${encodeURIComponent(n.source_url)}`} className="ln-card">
             <div className="ln-card-img">
               {n.cover_url ? (
-                <img src={proxiedUrl(n.cover_url, n.source_url)} alt={n.title} />
+                <img src={n.cover_url} alt={n.title} />
               ) : (
                 <div className="ln-card-no-img"><span className="ln-card-art-text">{n.title.slice(0, 2).toUpperCase()}</span></div>
               )}

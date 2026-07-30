@@ -1,29 +1,28 @@
+// app/api/image/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-// Source-specific Referer headers — required to bypass hotlink protection
 function getReferer(url: string): string {
   try {
     const u = new URL(url);
     const host = u.hostname;
-    if (host.includes("novelfull"))    return "https://novelfull.net/";
-    if (host.includes("novelcool"))    return "https://www.novelcool.com/";
-    if (host.includes("novelbin"))     return "https://novelbin.com/";
-    if (host.includes("novelhall"))    return "https://www.novelhall.com/";
-    if (host.includes("novlove"))      return "https://novlove.com/";
-    if (host.includes("allnovelfull")) return "https://allnovelfull.com/";
+    if (host.includes("lightnovelpub"))  return "https://lightnovelpub.me/";
+    if (host.includes("novelfull"))      return "https://novelfull.net/";
+    if (host.includes("novelcool"))      return "https://www.novelcool.com/";
+    if (host.includes("novelbin"))       return "https://novelbin.com/";
+    if (host.includes("novelhall"))      return "https://www.novelhall.com/";
+    if (host.includes("novlove"))        return "https://novlove.com/";
+    if (host.includes("allnovelfull"))   return "https://allnovelfull.com/";
     return u.origin + "/";
   } catch {
-    return "https://novelfull.net/";
+    return "https://lightnovelpub.me/";
   }
 }
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url");
   if (!url) return new NextResponse("Missing URL", { status: 400 });
-
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+  if (!url.startsWith("http://") && !url.startsWith("https://"))
     return new NextResponse("Invalid URL", { status: 400 });
-  }
 
   try {
     const controller = new AbortController();
@@ -45,17 +44,13 @@ export async function GET(req: NextRequest) {
 
     clearTimeout(timeout);
 
-    if (!res.ok) {
-      return new NextResponse(`Upstream error: ${res.status}`, { status: res.status });
-    }
+    if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: res.status });
 
     const contentType = res.headers.get("content-type") || "image/jpeg";
-    if (!contentType.startsWith("image/")) {
+    if (!contentType.startsWith("image/"))
       return new NextResponse("Not an image", { status: 400 });
-    }
 
     const buffer = await res.arrayBuffer();
-
     return new NextResponse(buffer, {
       headers: {
         "Content-Type": contentType,
