@@ -22,7 +22,8 @@ interface ApiResult {
   _score?: number;
 }
 
-const SOURCES = ["All", "NovelFull", "AllNovelFull", "NovelBin", "NovelCool", "NovelHall", "NovLove"];
+// LightNovelPub first — it's the site's primary/focus source.
+const SOURCES = ["All", "LightNovelPub", "NovelFull", "AllNovelFull", "NovelBin", "NovLove"];
 
 const GENRES = [
   "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Harem",

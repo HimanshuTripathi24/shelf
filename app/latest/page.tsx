@@ -7,7 +7,7 @@ import * as cheerio from "cheerio";
 // ─── Image helper (same as library page) ─────────────────────────────────────
 function proxiedUrl(coverUrl: string, sourceUrl?: string): string {
   if (!coverUrl) return "";
-  let base = "https://novelfull.net";
+  let base = "https://lightnovelpub.me";
   if (sourceUrl) {
     try { base = new URL(sourceUrl).origin; } catch {}
   }
@@ -35,15 +35,15 @@ interface LatestNovel {
   cover_url: string;
   source_url: string;
   chapter: string;
-  author: string;
+  updated: string; // e.g. "10 minutes ago" — LightNovelPub's list pages show recency, not author
   genres: string[];
 }
 
 // ─── Scraper ──────────────────────────────────────────────────────────────────
 async function scrapeLatestPage(page: number): Promise<{ novels: LatestNovel[]; totalPages: number }> {
   const url = page === 1
-    ? "https://novelfull.net/latest-release-novel"
-    : `https://novelfull.net/latest-release-novel?page=${page}`;
+    ? "https://lightnovelpub.me/list/latest-release-novels/"
+    : `https://lightnovelpub.me/list/latest-release-novels/?page=${page}`;
 
   try {
     const res = await fetch(url, {
@@ -56,53 +56,59 @@ async function scrapeLatestPage(page: number): Promise<{ novels: LatestNovel[]; 
     const html = await res.text();
     const $ = cheerio.load(html);
 
-    // ── Parse total pages from Bootstrap pagination ──────────────────────────
-    // novelfull renders: <li class="last"><a href="...?page=N">Last</a></li>
+    // ── Parse total pages ─────────────────────────────────────────────────────
     let totalPages = 1;
-    const lastHref = $(".pagination .last a").attr("href") || $(".pagination li:last-child a").attr("href") || "";
-    const lastMatch = lastHref.match(/[?&]page=(\d+)/);
-    if (lastMatch) {
-      totalPages = parseInt(lastMatch[1], 10);
-    } else {
-      // Fallback: highest page number visible in pagination
-      $(".pagination a").each((_, el) => {
-        const n = parseInt($(el).text().trim(), 10);
-        if (!isNaN(n) && n > totalPages) totalPages = n;
-      });
-    }
+    $("a").each((_, el) => {
+      const href = $(el).attr("href") || "";
+      const text = $(el).text().trim().toLowerCase();
+      if (text === "last") {
+        const m = href.match(/[?&]page=(\d+)/) || href.match(/\/(\d+)\/?$/);
+        if (m) totalPages = Math.max(totalPages, parseInt(m[1], 10));
+      }
+    });
+    $(".pagination a, ul.pagination a").each((_, el) => {
+      const href = $(el).attr("href") || "";
+      const m = href.match(/[?&]page=(\d+)/) || href.match(/\/(\d+)\/?$/);
+      if (m) totalPages = Math.max(totalPages, parseInt(m[1], 10));
+    });
 
-    // ── Parse novel rows ─────────────────────────────────────────────────────
+    // ── Parse novel rows — match by href pattern rather than guessing class
+    // names, since it's resilient to LightNovelPub's markup changing. ────────
     const novels: LatestNovel[] = [];
-    $(".list-truyen .row").each((_, el) => {
-      const titleEl = $(el).find("h3.truyen-title a");
-      const title = titleEl.text().trim();
-      const link = titleEl.attr("href") || "";
-      if (!title || !link) return;
+    const seen = new Set<string>();
 
-      const imgEl = $(el).find("img");
-      const cover = imgEl.attr("data-src") || imgEl.attr("src") || "";
+    $('a[href*="/book/"]').each((_, el) => {
+      const $a = $(el);
+      const href = $a.attr("href") || "";
+      if (!href.includes("/book/") || href.includes("/chapter")) return;
 
-      const author = $(el).find(".author").text().trim() || "Unknown";
+      const title = ($a.attr("title") || $a.text()).trim();
+      if (!title) return;
+      const source_url = href.startsWith("http") ? href : `https://lightnovelpub.me${href}`;
+      if (seen.has(source_url)) return;
 
-      let chapter = $(el).find(".text-info a").first().text().trim();
-      if (!chapter) chapter = $(el).find(".text-info").first().text().trim();
-      chapter = chapter.replace(/\s+/g, " ").trim();
-      if (chapter.length > 40) chapter = "";
+      const container = $a.closest("li, article, div").length
+        ? $a.closest("li, article, div")
+        : $a.parent();
+      const img = container.find("img").first();
+      const cover_url = img.attr("src") || img.attr("data-src") || "";
+
+      const chapterA = container.find('a[href*="/chapter-"], a[href*="/chapter"]').first();
+      const chapter = chapterA.text().trim();
+
+      // The "X minutes/hours ago" text sits in the container but outside any link
+      const containerText = container.clone().children("a").remove().end().text();
+      const updatedMatch = containerText.match(/\d+\s+(minute|hour|day|week|month)s?\s+ago/i);
+      const updated = updatedMatch ? updatedMatch[0] : "";
 
       const genres: string[] = [];
-      $(el).find(".label-default").each((_, ge) => {
+      container.find('a[href*="/genres/"]').each((_, ge) => {
         const g = $(ge).text().trim();
         if (g && g.length < 20 && genres.length < 3) genres.push(g);
       });
 
-      novels.push({
-        title,
-        cover_url: cover.startsWith("http") ? cover : `https://novelfull.net${cover}`,
-        source_url: link.startsWith("http") ? link : `https://novelfull.net${link}`,
-        author,
-        chapter,
-        genres,
-      });
+      seen.add(source_url);
+      novels.push({ title, cover_url, source_url, chapter, updated, genres });
     });
 
     return { novels, totalPages };
@@ -380,7 +386,7 @@ async function LatestPageContent({
               <h1 className="lat-title">Latest Releases</h1>
             </div>
             <p className="lat-subtitle">
-              Page {currentPage} of {totalPages} · Updated continuously from NovelFull
+              Page {currentPage} of {totalPages} · Updated continuously from LightNovelPub
             </p>
           </div>
 
@@ -409,7 +415,7 @@ async function LatestPageContent({
 
                     <div className="lat-info">
                       <div className="lat-novel-title">{n.title}</div>
-                      <div className="lat-novel-author">{n.author}</div>
+                      {n.updated && <div className="lat-novel-author">{n.updated}</div>}
                       {n.genres.length > 0 && (
                         <div className="lat-genres">
                           {n.genres.map(g => <span key={g} className="lat-genre">{g}</span>)}

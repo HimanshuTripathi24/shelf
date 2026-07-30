@@ -7,8 +7,8 @@ import * as cheerio from "cheerio";
 function proxiedUrl(coverUrl: string, sourceUrl?: string): string {
   if (!coverUrl) return "";
   // Derive a base origin from source_url to resolve relative image paths
-  // e.g. https://novelfull.net/novel/... → https://novelfull.net
-  let base = "https://novelfull.net";
+  // e.g. https://lightnovelpub.me/book/... → https://lightnovelpub.me
+  let base = "https://lightnovelpub.me";
   if (sourceUrl) {
     try { base = new URL(sourceUrl).origin; } catch {}
   }
@@ -233,46 +233,46 @@ async function ContinueReading() {
 // ─── 1. Latest Releases (3x3 Grid) ───────────────────────────────────────────
 
 async function LatestReleases() {
-  let novels: { title: string; cover_url: string; source_url: string; chapter: string; author: string; genres: string[] }[] = [];
+  let novels: { title: string; cover_url: string; source_url: string; chapter: string; genres: string[] }[] = [];
   try {
-    const res = await fetch("https://novelfull.net/latest-release-novel", {
+    const res = await fetch("https://lightnovelpub.me/list/latest-release-novels/", {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-      next: { revalidate: 900 },
+      next: { revalidate: 300 },
     });
     const html = await res.text();
     const $ = cheerio.load(html);
+    const seen = new Set<string>();
 
-    $(".list-truyen .row").slice(0, 9).each((_, el) => {
-      const titleEl = $(el).find("h3.truyen-title a");
-      const title = titleEl.text().trim();
-      const link = titleEl.attr("href") || "";
-      const imgEl = $(el).find("img");
-      const cover = imgEl.attr("data-src") || imgEl.attr("src") || "";
-      const author = $(el).find(".author").text().trim() || "Unknown";
+    // Match by href pattern (/book/, /genres/, /chapter-) rather than guessing
+    // CSS class names — this is resilient to LightNovelPub's markup changing.
+    $('a[href*="/book/"]').each((_, el) => {
+      if (novels.length >= 9) return;
+      const $a = $(el);
+      const href = $a.attr("href") || "";
+      if (!href.includes("/book/") || href.includes("/chapter")) return;
 
-      // Latest chapter — prefer the anchor text inside .text-info, strip "Chapter" prefix
-      let chapter = $(el).find(".text-info a").first().text().trim();
-      if (!chapter) chapter = $(el).find(".text-info").first().text().trim();
-      chapter = chapter.replace(/\s+/g, " ").trim();
-      if (!chapter || chapter.length > 40) chapter = "";
+      const title = ($a.attr("title") || $a.text()).trim();
+      if (!title) return;
+      const source_url = href.startsWith("http") ? href : `https://lightnovelpub.me${href}`;
+      if (seen.has(source_url)) return;
 
-      // Genres — collect up to 3 label tags, skip noisy ones
+      const container = $a.closest("li, article, div").length
+        ? $a.closest("li, article, div")
+        : $a.parent();
+      const img = container.find("img").first();
+      const cover_url = img.attr("src") || img.attr("data-src") || "";
+
+      const chapterA = container.find('a[href*="/chapter-"], a[href*="/chapter"]').first();
+      const chapter = chapterA.text().trim();
+
       const genres: string[] = [];
-      $(el).find(".label-default").each((_, ge) => {
+      container.find('a[href*="/genres/"]').each((_, ge) => {
         const g = $(ge).text().trim();
         if (g && g.length < 20 && genres.length < 3) genres.push(g);
       });
 
-      if (title && link) {
-        novels.push({
-          title,
-          cover_url: cover.startsWith("http") ? cover : `https://novelfull.net${cover}`,
-          source_url: link.startsWith("http") ? link : `https://novelfull.net${link}`,
-          author,
-          chapter,
-          genres,
-        });
-      }
+      seen.add(source_url);
+      novels.push({ title, cover_url, source_url, chapter, genres });
     });
   } catch { novels = []; }
 
@@ -289,7 +289,7 @@ async function LatestReleases() {
           <Link key={n.source_url} href={`/novel?url=${encodeURIComponent(n.source_url)}`} className="ln-latest-cell">
             <div className="ln-latest-thumb">
               {n.cover_url ? (
-                <img src={proxiedUrl(n.cover_url, n.source_url)} alt={n.title} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+                <img src={n.cover_url} alt={n.title} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <div className="ln-card-no-img"><span style={{ fontSize: "14px", fontWeight: "bold", color: "#666" }}>{n.title.slice(0, 1)}</span></div>
               )}
@@ -301,10 +301,11 @@ async function LatestReleases() {
                   {n.genres.map(g => <span key={g} className="ln-genre-tag">{g}</span>)}
                 </div>
               )}
-              <div className="ln-latest-meta">
-                {n.chapter && <span className="ln-ch-tag">{n.chapter}</span>}
-                <span className="ln-author-tag">{n.author}</span>
-              </div>
+              {n.chapter && (
+                <div className="ln-latest-meta">
+                  <span className="ln-ch-tag">{n.chapter}</span>
+                </div>
+              )}
             </div>
           </Link>
         ))}

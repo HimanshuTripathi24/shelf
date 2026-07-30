@@ -1,66 +1,160 @@
-// app/api/image/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// app/api/search/route.ts
+//
+// FIX: this file previously contained a verbatim copy of app/api/image/route.ts
+// (the image proxy), so /api/search never actually searched anything — it's why
+// the search page always came back empty. This is the real implementation.
+//
+// LightNovelPub (our primary/focus source) doesn't expose a server-rendered
+// search endpoint — its /search page is a client-side (JS) app, so a plain
+// fetch gets back an unrendered template with no results. Rather than silently
+// dropping it, we approximate "search" for it by pulling its public listing
+// pages (latest / most popular / completed) and filtering by title match.
+// That's not a full-text search of its entire catalog, but it covers the
+// active/popular novels people are actually looking for. The NovelFull-family
+// sites below DO have a real server-rendered search (`?keyword=`), so those
+// results are exhaustive.
 
-function getReferer(url: string): string {
+import { NextRequest, NextResponse } from "next/server";
+import * as cheerio from "cheerio";
+
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+interface SearchResult {
+  title: string;
+  source_url: string;
+  cover_url: string;
+  source: string;
+}
+
+async function fetchHtml(url: string): Promise<string | null> {
   try {
-    const u = new URL(url);
-    const host = u.hostname;
-    if (host.includes("lightnovelpub"))  return "https://lightnovelpub.me/";
-    if (host.includes("novelfull"))      return "https://novelfull.net/";
-    if (host.includes("novelcool"))      return "https://www.novelcool.com/";
-    if (host.includes("novelbin"))       return "https://novelbin.com/";
-    if (host.includes("novelhall"))      return "https://www.novelhall.com/";
-    if (host.includes("novlove"))        return "https://novlove.com/";
-    if (host.includes("allnovelfull"))   return "https://allnovelfull.com/";
-    return u.origin + "/";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 9000);
+    const res = await fetch(url, {
+      headers: { "User-Agent": UA },
+      signal: controller.signal,
+      next: { revalidate: 60 },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return await res.text();
   } catch {
-    return "https://lightnovelpub.me/";
+    return null;
   }
 }
 
+// ─── LightNovelPub (primary/focus source) ──────────────────────────────────
+async function searchLightNovelPub(query: string): Promise<SearchResult[]> {
+  const listUrls = [
+    "https://lightnovelpub.me/list/latest-novels/",
+    "https://lightnovelpub.me/list/most-popular-novels/",
+    "https://lightnovelpub.me/list/completed-novels/",
+  ];
+
+  const htmls = await Promise.all(listUrls.map(fetchHtml));
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  const seen = new Set<string>();
+  const results: SearchResult[] = [];
+
+  for (const html of htmls) {
+    if (!html) continue;
+    const $ = cheerio.load(html);
+
+    // Match by href pattern rather than guessing CSS class names — LightNovelPub's
+    // markup uses /book/<slug> links consistently for novel titles.
+    $('a[href*="/book/"]').each((_, el) => {
+      const $a = $(el);
+      const href = $a.attr("href") || "";
+      if (!href.includes("/book/") || href.includes("/chapter")) return;
+
+      const title = ($a.attr("title") || $a.text()).trim();
+      if (!title || !title.toLowerCase().includes(q)) return;
+
+      const url = href.startsWith("http") ? href : `https://lightnovelpub.me${href}`;
+      if (seen.has(url)) return;
+      seen.add(url);
+
+      const container = $a.closest("li, article, div").length
+        ? $a.closest("li, article, div")
+        : $a.parent();
+      const img = container.find("img").first();
+      const cover = img.attr("src") || img.attr("data-src") || "";
+
+      results.push({
+        title,
+        source_url: url,
+        cover_url: cover,
+        source: "LightNovelPub",
+      });
+    });
+  }
+
+  return results;
+}
+
+// ─── NovelFull-family (share the same CMS, have real server-side search) ──
+const NOVELFULL_FAMILY: { name: string; base: string }[] = [
+  { name: "NovelFull", base: "https://novelfull.net" },
+  { name: "AllNovelFull", base: "https://allnovelfull.com" },
+  { name: "NovelBin", base: "https://novelbin.com" },
+  { name: "NovLove", base: "https://novlove.com" },
+];
+
+async function searchNovelFullFamily(
+  name: string,
+  base: string,
+  query: string
+): Promise<SearchResult[]> {
+  const html = await fetchHtml(`${base}/search?keyword=${encodeURIComponent(query)}`);
+  if (!html) return [];
+
+  const $ = cheerio.load(html);
+  const results: SearchResult[] = [];
+
+  $(".list-truyen .row").each((_, el) => {
+    const titleEl = $(el).find("h3.truyen-title a");
+    const title = titleEl.text().trim();
+    const href = titleEl.attr("href") || "";
+    if (!title || !href) return;
+
+    const imgEl = $(el).find("img");
+    const cover = imgEl.attr("data-src") || imgEl.attr("src") || "";
+
+    results.push({
+      title,
+      source_url: href.startsWith("http") ? href : `${base}${href}`,
+      cover_url: cover.startsWith("http") ? cover : `${base}${cover}`,
+      source: name,
+    });
+  });
+
+  return results;
+}
+
 export async function GET(req: NextRequest) {
-  const url = req.nextUrl.searchParams.get("url");
-  if (!url) return new NextResponse("Missing URL", { status: 400 });
-  if (!url.startsWith("http://") && !url.startsWith("https://"))
-    return new NextResponse("Invalid URL", { status: 400 });
+  const q = req.nextUrl.searchParams.get("q")?.trim();
+  if (!q) {
+    return NextResponse.json({ results: [], query: "", total: 0 });
+  }
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const [lnpResults, ...familyResults] = await Promise.all([
+      searchLightNovelPub(q),
+      ...NOVELFULL_FAMILY.map((s) => searchNovelFullFamily(s.name, s.base, q)),
+    ]);
 
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": getReferer(url),
-        "Accept": "image/webp,image/avif,image/apng,image/*,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "image",
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "cross-site",
-      },
-    });
+    // LightNovelPub first — it's the site's primary/focus source.
+    const results = [...lnpResults, ...familyResults.flat()];
 
-    clearTimeout(timeout);
-
-    if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: res.status });
-
-    const contentType = res.headers.get("content-type") || "image/jpeg";
-    if (!contentType.startsWith("image/"))
-      return new NextResponse("Not an image", { status: 400 });
-
-    const buffer = await res.arrayBuffer();
-    return new NextResponse(buffer, {
-      headers: {
-        "Content-Type": contentType,
-        "Cache-Control": "public, max-age=604800, stale-while-revalidate=86400",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("Image proxy error:", url, message);
-    return new NextResponse("Failed to fetch image", { status: 500 });
+    return NextResponse.json({ results, query: q, total: results.length });
+  } catch (error) {
+    console.error("Search error:", error);
+    return NextResponse.json(
+      { error: "Search failed", results: [], query: q, total: 0 },
+      { status: 500 }
+    );
   }
 }
