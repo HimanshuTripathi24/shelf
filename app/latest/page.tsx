@@ -217,12 +217,37 @@ function Pagination({ current, total }: { current: number; total: number }) {
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
-export default async function LatestPage({
+// With `cacheComponents` enabled, reading `searchParams` and awaiting an
+// uncached fetch has to happen inside a component wrapped by <Suspense>,
+// otherwise Next errors at build time with "Uncached data was accessed
+// outside of <Suspense>". So the default export stays a plain (non-async)
+// component whose only job is to render the Suspense boundary; all the
+// actual data fetching moves into <LatestPageContent> below.
+export default function LatestPage({
   searchParams,
 }: {
-  searchParams: { page?: string };
+  searchParams: Promise<{ page?: string }>;
 }) {
-  const currentPage = Math.max(1, parseInt(searchParams.page || "1", 10));
+  return (
+    <Suspense fallback={<LatestPageFallback />}>
+      <LatestPageContent searchParams={searchParams} />
+    </Suspense>
+  );
+}
+
+function LatestPageFallback() {
+  return (
+    <div style={{ background: "#080808", minHeight: "100vh" }} />
+  );
+}
+
+async function LatestPageContent({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const currentPage = Math.max(1, parseInt(resolvedSearchParams.page || "1", 10));
   const { novels, totalPages } = await scrapeLatestPage(currentPage);
 
   return (
