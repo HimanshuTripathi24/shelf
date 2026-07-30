@@ -1,29 +1,114 @@
 // app/api/novel/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import * as cheerio from "cheerio";
+import { createClient } from "@supabase/supabase-js";
 
 const CHAPTERS_PER_PAGE = 100;
+const NOVELFULL_SOURCE_PAGES_PER_OUR_PAGE = 2;
 
+// ─── Supabase (service role — no RLS restrictions for cache table) ────────────
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// ─── Cache TTL logic ──────────────────────────────────────────────────────────
+// Page 1       → 1 hour  (metadata + totalPages changes with new releases)
+// Last page    → 1 hour  (new chapters always append here)
+// Middle pages → 24 hours (chapters here never change)
+function getTTLMinutes(page: number, totalPages: number): number {
+  if (page === 1 || page === totalPages) return 60;
+  return 24 * 60;
+}
+
+function isStale(cachedAt: string, ttlMinutes: number): boolean {
+  const age = (Date.now() - new Date(cachedAt).getTime()) / 60000;
+  return age > ttlMinutes;
+}
+
+// ─── Cache read ───────────────────────────────────────────────────────────────
+async function getCached(sourceUrl: string, page: number): Promise<{
+  payload: Record<string, unknown>;
+  total_pages: number;
+  cached_at: string;
+} | null> {
+  try {
+    const { data } = await supabase
+      .from("novel_page_cache")
+      .select("payload, total_pages, cached_at")
+      .eq("source_url", sourceUrl)
+      .eq("page", page)
+      .single();
+    return data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Cache write (non-blocking, fire-and-forget) ──────────────────────────────
+async function setCache(
+  sourceUrl: string,
+  page: number,
+  totalPages: number,
+  payload: Record<string, unknown>
+): Promise<void> {
+  try {
+    await supabase.from("novel_page_cache").upsert(
+      { source_url: sourceUrl, page, total_pages: totalPages, payload, cached_at: new Date().toISOString() },
+      { onConflict: "source_url,page" }
+    );
+  } catch { /* silent — cache write failure is non-fatal */ }
+}
+
+// ─── Fetch with Cloudflare bypass ─────────────────────────────────────────────
+// Try direct first. Only burn ScraperAPI credits when Cloudflare actually blocks.
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+function isCloudflareBlock(html: string): boolean {
+  return (
+    html.includes("Just a moment") ||
+    html.includes("cf-browser-verification") ||
+    html.includes("cf_chl_") ||
+    html.includes("challenge-platform") ||
+    html.includes("Enable JavaScript and cookies to continue") ||
+    html.includes("DDoS protection by Cloudflare")
+  );
+}
+
+async function fetchHtml(url: string): Promise<string> {
+  // 1. Try direct
+  const directRes = await fetch(url, { headers: { "User-Agent": UA } });
+  const html = await directRes.text();
+  if (!isCloudflareBlock(html)) return html;
+
+  // 2. Blocked — try ScraperAPI if key is set
+  const scraperKey = process.env.SCRAPER_API_KEY;
+  if (scraperKey) {
+    const apiUrl = `http://api.scraperapi.com?api_key=${scraperKey}&url=${encodeURIComponent(url)}`;
+    const scraperRes = await fetch(apiUrl, { headers: { "User-Agent": UA } });
+    const scraperHtml = await scraperRes.text();
+    if (!isCloudflareBlock(scraperHtml)) return scraperHtml;
+  }
+
+  throw new Error("CLOUDFLARE_BLOCK");
+}
+
+// ─── Image proxy helper ────────────────────────────────────────────────────────
 function proxyImg(rawUrl: string, sourceBase: string, req: NextRequest): string {
   if (!rawUrl) return "";
-  // Resolve relative URLs to absolute using the novel's domain
   const absolute = rawUrl.startsWith("http") ? rawUrl : new URL(rawUrl, sourceBase).href;
   const base = new URL(req.url).origin;
   return `${base}/api/image?url=${encodeURIComponent(absolute)}`;
 }
 
-// ─── NovelFull / AllNovelFull / NovLove / NovelBin ──────────────────────────
-
-const NOVELFULL_SOURCE_PAGES_PER_OUR_PAGE = 2;
+// ─── NovelFull / AllNovelFull / NovLove / NovelBin ────────────────────────────
 
 async function fetchNovelFullSourcePage(
   url: string,
-  sourcePage: number,
-  headers: Record<string, string>
+  sourcePage: number
 ): Promise<{ html: string; sourceTotal: number }> {
   const pageUrl = sourcePage === 1 ? url : `${url}?page=${sourcePage}`;
-  const res = await fetch(pageUrl, { headers });
-  const html = await res.text();
+  const html = await fetchHtml(pageUrl);
 
   const $ = cheerio.load(html);
   let sourceTotal = 1;
@@ -40,36 +125,25 @@ async function fetchNovelFullSourcePage(
 }
 
 async function parseNovelFullStyle(url: string, page: number, req: NextRequest) {
-  const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-  const headers = { "User-Agent": UA };
   const sourceBase = new URL(url).origin;
 
   const firstSourcePage = (page - 1) * NOVELFULL_SOURCE_PAGES_PER_OUR_PAGE + 1;
   const secondSourcePage = firstSourcePage + 1;
 
-  const { html: html1, sourceTotal } = await fetchNovelFullSourcePage(url, firstSourcePage, headers);
+  const { html: html1, sourceTotal } = await fetchNovelFullSourcePage(url, firstSourcePage);
   const $1 = cheerio.load(html1);
 
   const cleanTitle = (t: string) =>
     t.replace(/\s*[\|\-–]\s*.*/g, "")
-     .replace(/^read\s+/i, "")
      .replace(/\s*(novel\s*)?(online\s*)?(free\s*)?$/i, "")
      .trim();
   const titleFromOg = $1('meta[property="og:title"]').attr("content")?.trim() || "";
   const titleFromH3 = $1(".col-info-desc h3.title, .info h3.title").first().text().trim();
   const title = cleanTitle(titleFromOg) || cleanTitle(titleFromH3) || cleanTitle($1("title").text());
-
-  const author = $1(".info-meta li:contains('Author') a, [itemprop='author'], .author a")
-    .first().text().trim();
-
-  // Fix: resolve relative cover URL to absolute before proxying
-  const coverRaw = $1(".col-book img, .book img, .info-cover img, img[itemprop='image']")
-    .first().attr("src") || "";
+  const author = $1(".info-meta li:contains('Author') a, [itemprop='author'], .author a").first().text().trim();
+  const coverRaw = $1(".col-book img, .book img, .info-cover img, img[itemprop='image']").first().attr("src") || "";
   const cover_url = proxyImg(coverRaw, sourceBase, req);
-
-  const synopsis = $1(".desc-text, .synopsis p, .description, .book-intro")
-    .first().text().trim();
-
+  const synopsis = $1(".desc-text, .synopsis p, .description, .book-intro").first().text().trim();
   const totalPages = Math.ceil(sourceTotal / NOVELFULL_SOURCE_PAGES_PER_OUR_PAGE);
 
   function isPaginationNoise(text: string): boolean {
@@ -86,14 +160,8 @@ async function parseNovelFullStyle(url: string, page: number, req: NextRequest) 
     $("ul.list-chapter li a, .list-chapter li a, #list-chapter li a").each((_, el) => {
       const href = $(el).attr("href") || "";
       const chTitle = $(el).text().trim();
-      // Skip pagination links (href contains ?page= or #) and noise text
       if (!href || !chTitle || isPaginationNoise(chTitle)) return;
-      if (/[?#]/.test(href) && /[?&]page=/.test(href)) return;
-      result.push({
-        number: offset + result.length + 1,
-        title: chTitle,
-        url: new URL(href, baseUrl).href,
-      });
+      result.push({ number: offset + result.length + 1, title: chTitle, url: new URL(href, baseUrl).href });
     });
     return result;
   }
@@ -103,33 +171,22 @@ async function parseNovelFullStyle(url: string, page: number, req: NextRequest) 
 
   let chaptersFromPage2: { number: number; title: string; url: string }[] = [];
   if (secondSourcePage <= sourceTotal) {
-    const { html: html2 } = await fetchNovelFullSourcePage(url, secondSourcePage, headers);
+    const { html: html2 } = await fetchNovelFullSourcePage(url, secondSourcePage);
     const $2 = cheerio.load(html2);
-    // Use actual count from page1, not the fixed CHAPTERS_PER_PAGE constant,
-    // so chapter numbers stay accurate even when a source page has fewer entries
-    const offset2 = offset1 + chaptersFromPage1.length;
-    chaptersFromPage2 = extractChapters($2, offset2, url);
+    chaptersFromPage2 = extractChapters($2, offset1 + chaptersFromPage1.length, url);
   }
 
-  const chapters = [...chaptersFromPage1, ...chaptersFromPage2];
-
-  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters };
+  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters: [...chaptersFromPage1, ...chaptersFromPage2] };
 }
 
-// ─── NovelCool ───────────────────────────────────────────────────────────────
+// ─── NovelCool ────────────────────────────────────────────────────────────────
 
 async function parseNovelCool(url: string, page: number, req: NextRequest) {
   const sourceBase = new URL(url).origin;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
-  });
-  const html = await res.text();
+  const html = await fetchHtml(url);
   const $ = cheerio.load(html);
 
-  const titleRaw = $('meta[property="og:title"]').attr("content")
-    || $("h1.book-name, .bookinfo h1, h1").first().text();
+  const titleRaw = $('meta[property="og:title"]').attr("content") || $("h1.book-name, .bookinfo h1, h1").first().text();
   const title = titleRaw?.split(/[|\-–]/)[0].trim() || "";
   const author = $(".author a, [itemprop='author']").first().text().trim();
   const coverRaw = $(".book-img img, .cover img").first().attr("src") || "";
@@ -140,32 +197,23 @@ async function parseNovelCool(url: string, page: number, req: NextRequest) {
   $(".chapter-item a, .chp-item a").each((i, el) => {
     const href = $(el).attr("href");
     const chTitle = $(el).text().trim();
-    if (href && chTitle && chTitle.length > 2) {
+    if (href && chTitle && chTitle.length > 2)
       allChapters.push({ number: i + 1, title: chTitle, url: new URL(href, url).href });
-    }
   });
 
   const totalPages = Math.max(1, Math.ceil(allChapters.length / CHAPTERS_PER_PAGE));
   const start = (page - 1) * CHAPTERS_PER_PAGE;
-  const chapters = allChapters.slice(start, start + CHAPTERS_PER_PAGE);
-
-  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters };
+  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters: allChapters.slice(start, start + CHAPTERS_PER_PAGE) };
 }
 
-// ─── NovelHall ───────────────────────────────────────────────────────────────
+// ─── NovelHall ────────────────────────────────────────────────────────────────
 
 async function parseNovelHall(url: string, page: number, req: NextRequest) {
   const sourceBase = new URL(url).origin;
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
-  });
-  const html = await res.text();
+  const html = await fetchHtml(url);
   const $ = cheerio.load(html);
 
-  const titleRaw = $('meta[property="og:title"]').attr("content")
-    || $("h1.section-title, h1").first().text();
+  const titleRaw = $('meta[property="og:title"]').attr("content") || $("h1.section-title, h1").first().text();
   const title = titleRaw?.split(/[|\-–]/)[0].trim() || "";
   const author = $(".author a, [itemprop='author'], .book-meta a").first().text().trim();
   const coverRaw = $(".book-img img, .cover img, img.lazy").first().attr("data-src")
@@ -177,30 +225,40 @@ async function parseNovelHall(url: string, page: number, req: NextRequest) {
   $(".chapter-list li a, #chapterList li a, .volume-item li a").each((i, el) => {
     const href = $(el).attr("href");
     const chTitle = $(el).text().trim();
-    if (href && chTitle && chTitle.length > 2) {
+    if (href && chTitle && chTitle.length > 2)
       allChapters.push({ number: i + 1, title: chTitle, url: new URL(href, url).href });
-    }
   });
 
   const totalPages = Math.max(1, Math.ceil(allChapters.length / CHAPTERS_PER_PAGE));
   const start = (page - 1) * CHAPTERS_PER_PAGE;
-  const chapters = allChapters.slice(start, start + CHAPTERS_PER_PAGE);
-
-  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters };
+  return { title, author, cover_url, synopsis, totalPages, currentPage: page, chapters: allChapters.slice(start, start + CHAPTERS_PER_PAGE) };
 }
 
-// ─── Route handler ───────────────────────────────────────────────────────────
+// ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const novelUrl = searchParams.get("url");
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
+  const nocache = searchParams.get("nocache") === "1";
 
   if (!novelUrl) {
     return NextResponse.json({ error: "URL is required" }, { status: 400 });
   }
 
   try {
+    // ── 1. Check cache ──────────────────────────────────────────────────────
+    if (!nocache) {
+      const cached = await getCached(novelUrl, page);
+      if (cached) {
+        const ttl = getTTLMinutes(page, cached.total_pages);
+        if (!isStale(cached.cached_at, ttl)) {
+          return NextResponse.json({ ...cached.payload, cached: true });
+        }
+      }
+    }
+
+    // ── 2. Cache miss / stale — scrape ─────────────────────────────────────
     const hostname = new URL(novelUrl).hostname;
     let result;
 
@@ -220,9 +278,29 @@ export async function GET(request: NextRequest) {
     else if (hostname.includes("novelhall")) source = "NovelHall";
     else if (hostname.includes("novlove")) source = "NovLove";
 
-    return NextResponse.json({ ...result, source });
+    const payload = { ...result, source };
+
+    // ── 3. Write to cache (fire-and-forget) ─────────────────────────────────
+    setCache(novelUrl, page, result.totalPages, payload);
+
+    return NextResponse.json(payload);
+
   } catch (error) {
     console.error("Novel fetch error:", error);
+    const msg = error instanceof Error ? error.message : "";
+
+    if (msg === "CLOUDFLARE_BLOCK") {
+      // Serve stale cache if available — better than an error
+      const stale = await getCached(novelUrl, page);
+      if (stale) {
+        return NextResponse.json({ ...stale.payload, cached: true, stale: true });
+      }
+      return NextResponse.json({
+        error: "CLOUDFLARE_BLOCK",
+        message: "This source is temporarily blocked. Please try again in a few minutes.",
+      }, { status: 503 });
+    }
+
     return NextResponse.json({ error: "Failed to fetch novel data" }, { status: 500 });
   }
 }

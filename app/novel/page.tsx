@@ -71,123 +71,56 @@ function NovelDetailContent() {
   const [continueLoading, setContinueLoading] = useState(false);
 
   // Refs to avoid stale closures in async loops
+  const loadedPageRef = useRef(0);
   const allChaptersRef = useRef<Chapter[]>([]);
   const totalPagesRef = useRef(1);
-  // Exact set of source pages fetched so far. Needed because jumps/Continue
-  // can now land on a page far ahead of what's been loaded, leaving gaps
-  // behind them — a single "highest page" counter can't represent that.
-  const loadedPagesRef = useRef<Set<number>>(new Set());
-  const backfillingRef = useRef(false);
-  const [backfilling, setBackfilling] = useState(false);
 
   // ── Raw page fetcher ────────────────────────────────────────────────────────
   async function fetchPageRaw(page: number) {
     const res = await fetch(`/api/novel?url=${encodeURIComponent(sourceUrl!)}&page=${page}`);
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) {
+      if (data.error === "CLOUDFLARE_BLOCK") {
+        throw new Error("⚠️ Cloudflare is blocking this source right now. Please try again in a few minutes.");
+      }
+      throw new Error(data.error);
+    }
     return data;
   }
 
   // ── Merge chapters deduplicating by URL ─────────────────────────────────────
-  // IMPORTANT: keeps each chapter's real absolute number from the backend
-  // (computed there as offset + position). Earlier this re-numbered everything
-  // by array position, which only stayed correct if pages were always loaded
-  // strictly in order 1,2,3... — that's what forced Continue/Jump to walk
-  // every page in between. Sorting by number instead lets us load any page
-  // directly, in any order, without corrupting chapter numbers.
   function mergeChapters(prev: Chapter[], incoming: Chapter[]): Chapter[] {
-    const byUrl = new Map(prev.map(c => [c.url, c]));
-    for (const c of incoming) byUrl.set(c.url, c);
-    return Array.from(byUrl.values()).sort((a, b) => a.number - b.number);
+    const existingUrls = new Set(prev.map(c => c.url));
+    const newOnes = incoming.filter(c => !existingUrls.has(c.url));
+    return [...prev, ...newOnes].map((c, i) => ({ ...c, number: i + 1 }));
   }
 
-  // ── Mark a page as loaded and refresh the "furthest page reached" display ───
-  function markPageLoaded(page: number) {
-    loadedPagesRef.current.add(page);
-    const maxPage = Math.max(...loadedPagesRef.current);
-    setLoadedPage(maxPage);
-  }
-
-  // ── Standard sequential fetch (initial load + Load Next Page button) ────────
+  // ── Standard sequential fetch (Load More button) ────────────────────────────
   async function fetchChapterPage(page: number) {
     if (loadingChapters || !sourceUrl) return;
     setLoadingChapters(true);
     try {
       const data = await fetchPageRaw(page);
-      if (!novelMeta) {
+      if (page === 1) {
         setNovelMeta({ title: data.title, author: data.author, cover_url: data.cover_url, synopsis: data.synopsis, source: data.source });
+        setTotalPages(data.totalPages || 1);
+        totalPagesRef.current = data.totalPages || 1;
+        setAllChapters(data.chapters || []);
+        allChaptersRef.current = data.chapters || [];
         setLoadingMeta(false);
+      } else {
+        const merged = mergeChapters(allChaptersRef.current, data.chapters || []);
+        setAllChapters(merged);
+        allChaptersRef.current = merged;
       }
-      if (data.totalPages) {
-        setTotalPages(data.totalPages);
-        totalPagesRef.current = data.totalPages;
-      }
-      const merged = mergeChapters(allChaptersRef.current, data.chapters || []);
-      setAllChapters(merged);
-      allChaptersRef.current = merged;
-      markPageLoaded(page);
+      setLoadedPage(page);
+      loadedPageRef.current = page;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to load";
       setError(msg);
       setLoadingMeta(false);
     } finally {
       setLoadingChapters(false);
-    }
-  }
-
-  // ── Background gap-filler ────────────────────────────────────────────────────
-  // After a jump lands directly on a distant page, this quietly fetches any
-  // earlier pages that got skipped, one at a time, so the chapter list ends up
-  // gap-free without ever blocking the jump itself. Best-effort: a failed page
-  // is simply left for a future jump/backfill to pick up.
-  //
-  // Those earlier pages have lower chapter numbers, so they get inserted
-  // ABOVE the chapter you jumped to — which pushes everything below it down
-  // and would otherwise make the page jump around under you while it loads.
-  // `anchorChapter` is the chapter to hold in place: before each page merges
-  // in, we note its position on screen, and after React re-renders we nudge
-  // the scroll by however much that position shifted, so it holds still.
-  async function backfillMissingPages(anchorChapter: number) {
-    if (backfillingRef.current) return;
-    const maxLoaded = loadedPagesRef.current.size > 0 ? Math.max(...loadedPagesRef.current) : 0;
-    const missing: number[] = [];
-    for (let p = 1; p < maxLoaded; p++) {
-      if (!loadedPagesRef.current.has(p)) missing.push(p);
-    }
-    if (missing.length === 0) return;
-
-    backfillingRef.current = true;
-    setBackfilling(true);
-    try {
-      for (const p of missing) {
-        try {
-          const anchorEl = document.getElementById(`ch-${anchorChapter}`);
-          const beforeTop = anchorEl ? anchorEl.getBoundingClientRect().top : null;
-
-          const data = await fetchPageRaw(p);
-          const merged = mergeChapters(allChaptersRef.current, data.chapters || []);
-          allChaptersRef.current = merged;
-          setAllChapters(merged);
-          loadedPagesRef.current.add(p);
-
-          if (beforeTop !== null) {
-            // Wait for React to commit + the browser to paint the new list,
-            // then cancel out however far the anchor moved.
-            requestAnimationFrame(() => requestAnimationFrame(() => {
-              const afterEl = document.getElementById(`ch-${anchorChapter}`);
-              if (!afterEl) return;
-              const afterTop = afterEl.getBoundingClientRect().top;
-              const delta = afterTop - beforeTop;
-              if (Math.abs(delta) > 1) window.scrollBy(0, delta);
-            }));
-          }
-        } catch {
-          // Skip this page — not fatal, just leaves a gap for next time.
-        }
-      }
-    } finally {
-      backfillingRef.current = false;
-      setBackfilling(false);
     }
   }
 
@@ -201,7 +134,7 @@ function NovelDetailContent() {
     const existing = allChaptersRef.current.find(c => c.number === targetNum);
     if (existing) {
       setChapterSearch("");
-      scrollToChapter(targetNum);
+      requestAnimationFrame(() => requestAnimationFrame(() => scrollToChapter(targetNum)));
       return;
     }
 
@@ -209,39 +142,49 @@ function NovelDetailContent() {
     setJumpStatus("Fetching…");
 
     try {
-      // Defensive: in practice page 1 is always loaded before the search box
-      // is even reachable (it's gated behind novelMeta), but guard anyway.
-      if (loadedPagesRef.current.size === 0) {
+      let acc: Chapter[] = [...allChaptersRef.current];
+      let knownTotalPages = totalPagesRef.current;
+
+      // Ensure page 1 is loaded for meta + totalPages
+      if (loadedPageRef.current === 0) {
         setJumpStatus("Loading metadata…");
-        await fetchChapterPage(1);
+        const data = await fetchPageRaw(1);
+        knownTotalPages = data.totalPages || 1;
+        totalPagesRef.current = knownTotalPages;
+        setTotalPages(knownTotalPages);
+        setNovelMeta({ title: data.title, author: data.author, cover_url: data.cover_url, synopsis: data.synopsis, source: data.source });
+        setLoadingMeta(false);
+        acc = data.chapters || [];
+        setLoadedPage(1);
+        loadedPageRef.current = 1;
+        allChaptersRef.current = acc;
+        setAllChapters(acc);
       }
 
       const targetPage = Math.max(1, Math.ceil(targetNum / CHAPTERS_PER_PAGE));
-      const clampedPage = Math.min(targetPage, totalPagesRef.current || targetPage);
+      const startPage = loadedPageRef.current + 1;
+      const endPage = Math.min(targetPage, knownTotalPages);
 
-      // Jump straight to the page containing the target chapter — one fetch,
-      // no matter how far ahead it is. This is the whole fix.
-      setJumpStatus(`Loading page ${clampedPage}…`);
-      const data = await fetchPageRaw(clampedPage);
-
-      if (data.totalPages) {
-        setTotalPages(data.totalPages);
-        totalPagesRef.current = data.totalPages;
+      if (startPage > endPage) {
+        setChapterSearch("");
+        setJumpLoading(false);
+        setJumpStatus("");
+        requestAnimationFrame(() => requestAnimationFrame(() => scrollToChapter(targetNum)));
+        return;
       }
 
-      const merged = mergeChapters(allChaptersRef.current, data.chapters || []);
-      allChaptersRef.current = merged;
-      setAllChapters(merged);
-      markPageLoaded(clampedPage);
+      for (let p = startPage; p <= endPage; p++) {
+        setJumpStatus(`Loading page ${p}/${endPage}…`);
+        const data = await fetchPageRaw(p);
+        acc = mergeChapters(acc, data.chapters || []);
+        setLoadedPage(p);
+        loadedPageRef.current = p;
+        allChaptersRef.current = acc;
+        setAllChapters([...acc]);
+      }
 
       setChapterSearch("");
-      scrollToChapter(targetNum);
-
-      // Quietly fill in any pages this jump skipped over — doesn't block
-      // the jump itself, which already completed above. Give the smooth
-      // scroll above a moment to finish before backfill starts nudging
-      // things, so the two don't fight each other.
-      setTimeout(() => backfillMissingPages(targetNum), 700);
+      requestAnimationFrame(() => requestAnimationFrame(() => scrollToChapter(targetNum)));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Jump failed");
     } finally {
@@ -251,73 +194,61 @@ function NovelDetailContent() {
   }
 
   function scrollToChapter(num: number) {
-    let attempts = 0;
-    function tryScroll() {
-      const el = document.getElementById(`ch-${num}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        return;
-      }
-      // Keep polling briefly — after a jump, the search box clears and the
-      // (sometimes long) full chapter list has to re-render before the
-      // target chapter's element exists in the DOM. One fixed 200ms retry
-      // wasn't always enough for that, so poll instead of giving up once.
-      attempts++;
-      if (attempts < 30) setTimeout(tryScroll, 100); // up to ~3s
+    const el = document.getElementById(`ch-${num}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      setTimeout(() => {
+        document.getElementById(`ch-${num}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 200);
     }
-    tryScroll();
-  }
-
-  // ── Navigate to a chapter's reader URL ───────────────────────────────────────
-  function navigateToChapter(ch: Chapter) {
-    window.location.href = `/read?url=${encodeURIComponent(ch.url)}&novelId=${dbNovelId || ""}&chapter=${ch.number}&title=${encodeURIComponent(novelMeta!.title)}&novelUrl=${encodeURIComponent(sourceUrl || "")}`;
   }
 
   // ── Continue / Start Reading ─────────────────────────────────────────────────
-  // Jumps straight to the page containing the next unread chapter in one
-  // fetch — it used to walk every page from the start, which is why this was
-  // the slow part. We're navigating away right after, so there's no need to
-  // backfill the skipped pages here (unlike Jump, where the user stays put).
+  // Fetches pages until the next unread chapter is found, then navigates.
   async function handleContinue(e: React.MouseEvent) {
     e.preventDefault();
     if (!novelMeta || continueLoading) return;
 
     const targetNum = lastReadChapter + 1; // next unread chapter (or ch 1 if never read)
+    const targetPage = Math.max(1, Math.ceil(targetNum / CHAPTERS_PER_PAGE));
 
     // Already loaded — navigate immediately
     const found = allChaptersRef.current.find(c => c.number === targetNum);
     if (found) {
-      navigateToChapter(found);
+      window.location.href = `/read?url=${encodeURIComponent(found.url)}&novelId=${dbNovelId || ""}&chapter=${found.number}&title=${encodeURIComponent(novelMeta.title)}&novelUrl=${encodeURIComponent(sourceUrl || "")}`;
       return;
     }
 
     setContinueLoading(true);
     try {
-      const targetPage = Math.max(1, Math.ceil(targetNum / CHAPTERS_PER_PAGE));
-      const data = await fetchPageRaw(targetPage);
-      const chapters: Chapter[] = data.chapters || [];
+      let acc: Chapter[] = [...allChaptersRef.current];
+      const startPage = loadedPageRef.current + 1;
+      const endPage = Math.min(targetPage, totalPagesRef.current);
 
-      // Merge this page in so it counts as loaded if the user comes back here.
-      const merged = mergeChapters(allChaptersRef.current, chapters);
-      allChaptersRef.current = merged;
-      setAllChapters(merged);
-      if (data.totalPages) {
-        setTotalPages(data.totalPages);
-        totalPagesRef.current = data.totalPages;
-      }
-      markPageLoaded(targetPage);
+      for (let p = startPage; p <= endPage; p++) {
+        const data = await fetchPageRaw(p);
+        acc = mergeChapters(acc, data.chapters || []);
+        setLoadedPage(p);
+        loadedPageRef.current = p;
+        allChaptersRef.current = acc;
+        setAllChapters([...acc]);
 
-      // Exact chapter should be on this page; if not (e.g. progress is past
-      // the last scraped chapter), fall back to the last chapter on the page,
-      // then to the very first known chapter as a last resort.
-      const ch = chapters.find(c => c.number === targetNum) || chapters[chapters.length - 1] || allChaptersRef.current[0];
-      if (ch) {
-        navigateToChapter(ch);
-        return; // navigating away — no need to reset continueLoading
+        const ch = acc.find(c => c.number === targetNum);
+        if (ch) {
+          window.location.href = `/read?url=${encodeURIComponent(ch.url)}&novelId=${dbNovelId || ""}&chapter=${ch.number}&title=${encodeURIComponent(novelMeta.title)}&novelUrl=${encodeURIComponent(sourceUrl || "")}`;
+          return;
+        }
       }
-      setContinueLoading(false);
+
+      // Fallback to first chapter
+      const fallback = allChaptersRef.current[0];
+      if (fallback) {
+        window.location.href = `/read?url=${encodeURIComponent(fallback.url)}&novelId=${dbNovelId || ""}&chapter=${fallback.number}&title=${encodeURIComponent(novelMeta.title)}&novelUrl=${encodeURIComponent(sourceUrl || "")}`;
+      }
     } catch (e) {
       console.error("Continue failed:", e);
+    } finally {
       setContinueLoading(false);
     }
   }
@@ -352,12 +283,7 @@ function NovelDetailContent() {
 
   // ── Library actions ─────────────────────────────────────────────────────────
   async function handleAddToLibrary() {
-    if (!novelMeta || !sourceUrl) return;
-    if (!userId) {
-      // Guest — redirect to sign-in, return here after
-      router.push(`/sign-in?redirect=${encodeURIComponent(`/novel?url=${encodeURIComponent(sourceUrl)}`)}`);
-      return;
-    }
+    if (!userId || !novelMeta || !sourceUrl) return;
     setAddingToLibrary(true);
     const { data, error } = await supabase.from("novels").insert([{
       user_id: userId, title: novelMeta.title, author: novelMeta.author || "",
@@ -525,21 +451,7 @@ function NovelDetailContent() {
         .nd-ctx-item:hover{background:rgba(200,169,110,0.1);color:#c8a96e}
         .nd-ctx-divider{height:1px;background:rgba(255,255,255,0.06)}
         .nd-chapter-loading{display:flex;align-items:center;gap:8px;color:rgba(255,255,255,0.3);font-size:12px;letter-spacing:0.1em}
-        @media(max-width:640px){
-          .nd-hero-content{flex-direction:column;padding:24px 16px;gap:20px}
-          .nd-cover{width:100px;height:150px}
-          .nd-meta h1{font-size:20px}
-          .nd-synopsis{font-size:13px;-webkit-line-clamp:3}
-          .nd-actions{gap:8px}
-          .btn-primary,.btn-outline{padding:9px 14px;font-size:11px}
-          .nd-chapters{padding:24px 16px 80px}
-          .nd-chapters-header{flex-direction:column;align-items:flex-start;gap:12px}
-          .nd-search-wrap{width:100%}
-          .nd-ch-search{flex:1;width:100%}
-          .nd-selection-bar{left:12px;right:12px;transform:none;flex-wrap:wrap;gap:8px;bottom:12px}
-          .nd-sel-btn{font-size:10px;padding:5px 10px}
-          .nd-stats{gap:12px}
-        }
+        @media(max-width:640px){.nd-hero-content{flex-direction:column;padding:24px 16px}.nd-cover{width:120px;height:180px}.nd-chapters{padding:24px 16px 60px}.nd-search-wrap{width:100%}.nd-ch-search{flex:1;width:100%}}
       `}</style>
 
       {contextMenu && <div style={{ position: "fixed", inset: 0, zIndex: 499 }} onClick={() => setContextMenu(null)} />}
@@ -609,7 +521,7 @@ function NovelDetailContent() {
                 </>
               ) : (
                 <button className="btn-outline" onClick={handleAddToLibrary} disabled={addingToLibrary}>
-                  {addingToLibrary ? "Adding..." : userId ? "+ Add to Library" : "Sign In to Add"}
+                  {addingToLibrary ? "Adding..." : "+ Add to Library"}
                 </button>
               )}
             </div>
@@ -625,7 +537,6 @@ function NovelDetailContent() {
               {allChapters.length} loaded · {readChapters.size} read
               {totalPages > 1 && ` · Page ${loadedPage}/${totalPages}`}
               {chapterSearch && ` · ${filteredChapters.length} matching`}
-              {backfilling && ` · filling in earlier chapters…`}
             </p>
           </div>
           <div className="nd-search-wrap">
