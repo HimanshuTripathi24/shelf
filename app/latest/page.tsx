@@ -217,14 +217,87 @@ function Pagination({ current, total }: { current: number; total: number }) {
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
-export default async function LatestPage({
-  searchParams,
-}: {
-  searchParams: { page?: string };
-}) {
-  const currentPage = Math.max(1, parseInt(searchParams.page || "1", 10));
+type LatestSearchParams = Promise<{ page?: string }>;
+
+// Dynamic part: reads searchParams + fetches data, so it lives inside <Suspense>
+async function LatestContent({ searchParams }: { searchParams: LatestSearchParams }) {
+  const { page } = await searchParams;
+  const currentPage = Math.max(1, parseInt(page || "1", 10) || 1);
   const { novels, totalPages } = await scrapeLatestPage(currentPage);
 
+  return (
+      <main>
+        <div className="lat-page">
+          {/* Header */}
+          <div className="lat-header">
+            <div className="lat-breadcrumb">
+              <Link href="/">Home</Link>
+              <span className="lat-breadcrumb-sep">›</span>
+              <span>Latest Releases</span>
+            </div>
+            <div className="lat-title-row">
+              <span className="lat-pill">● LIVE</span>
+              <h1 className="lat-title">Latest Releases</h1>
+            </div>
+            <p className="lat-subtitle">
+              Page {currentPage} of {totalPages} · Updated continuously from NovelFull
+            </p>
+          </div>
+
+          {/* Novel list */}
+          {novels.length === 0 ? (
+            <div className="lat-empty">Could not load novels. Please try again.</div>
+          ) : (
+            <div className="lat-list">
+              {novels.map((n, i) => {
+                const rowNum = (currentPage - 1) * novels.length + i + 1;
+                return (
+                  <Link
+                    key={n.source_url}
+                    href={`/novel?url=${encodeURIComponent(n.source_url)}`}
+                    className="lat-row"
+                  >
+                    <span className="lat-row-num">{rowNum}</span>
+
+                    <div className="lat-thumb">
+                      {n.cover_url ? (
+                        <img src={proxiedUrl(n.cover_url, n.source_url)} alt={n.title} loading="lazy" />
+                      ) : (
+                        <div className="lat-thumb-fallback">{n.title.slice(0, 2).toUpperCase()}</div>
+                      )}
+                    </div>
+
+                    <div className="lat-info">
+                      <div className="lat-novel-title">{n.title}</div>
+                      <div className="lat-novel-author">{n.author}</div>
+                      {n.genres.length > 0 && (
+                        <div className="lat-genres">
+                          {n.genres.map(g => <span key={g} className="lat-genre">{g}</span>)}
+                        </div>
+                      )}
+                    </div>
+
+                    {n.chapter && (
+                      <span className="lat-chapter">{n.chapter}</span>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Pagination */}
+          <Pagination current={currentPage} total={totalPages} />
+          {totalPages > 1 && (
+            <p className="lat-page-info">Page {currentPage} / {totalPages}</p>
+          )}
+        </div>
+      </main>
+  );
+}
+
+// Static shell: no awaits here
+export default function LatestPage({ searchParams }: { searchParams: LatestSearchParams }) {
   return (
     <>
       <style>{`
@@ -341,73 +414,17 @@ export default async function LatestPage({
 
       <Suspense><NavBar /></Suspense>
 
-      <main>
-        <div className="lat-page">
-          {/* Header */}
-          <div className="lat-header">
-            <div className="lat-breadcrumb">
-              <Link href="/">Home</Link>
-              <span className="lat-breadcrumb-sep">›</span>
-              <span>Latest Releases</span>
+      <Suspense
+        fallback={
+          <main>
+            <div className="lat-page">
+              <div className="lat-empty">Loading latest releases…</div>
             </div>
-            <div className="lat-title-row">
-              <span className="lat-pill">● LIVE</span>
-              <h1 className="lat-title">Latest Releases</h1>
-            </div>
-            <p className="lat-subtitle">
-              Page {currentPage} of {totalPages} · Updated continuously from NovelFull
-            </p>
-          </div>
-
-          {/* Novel list */}
-          {novels.length === 0 ? (
-            <div className="lat-empty">Could not load novels. Please try again.</div>
-          ) : (
-            <div className="lat-list">
-              {novels.map((n, i) => {
-                const rowNum = (currentPage - 1) * novels.length + i + 1;
-                return (
-                  <Link
-                    key={n.source_url}
-                    href={`/novel?url=${encodeURIComponent(n.source_url)}`}
-                    className="lat-row"
-                  >
-                    <span className="lat-row-num">{rowNum}</span>
-
-                    <div className="lat-thumb">
-                      {n.cover_url ? (
-                        <img src={proxiedUrl(n.cover_url, n.source_url)} alt={n.title} loading="lazy" />
-                      ) : (
-                        <div className="lat-thumb-fallback">{n.title.slice(0, 2).toUpperCase()}</div>
-                      )}
-                    </div>
-
-                    <div className="lat-info">
-                      <div className="lat-novel-title">{n.title}</div>
-                      <div className="lat-novel-author">{n.author}</div>
-                      {n.genres.length > 0 && (
-                        <div className="lat-genres">
-                          {n.genres.map(g => <span key={g} className="lat-genre">{g}</span>)}
-                        </div>
-                      )}
-                    </div>
-
-                    {n.chapter && (
-                      <span className="lat-chapter">{n.chapter}</span>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Pagination */}
-          <Pagination current={currentPage} total={totalPages} />
-          {totalPages > 1 && (
-            <p className="lat-page-info">Page {currentPage} / {totalPages}</p>
-          )}
-        </div>
-      </main>
+          </main>
+        }
+      >
+        <LatestContent searchParams={searchParams} />
+      </Suspense>
 
       <footer className="ln-footer">
         ⬡ SHELF · Your personal light novel archive
