@@ -1,7 +1,7 @@
 # SHELF
 
 A personal light novel reading tracker built with Next.js and Supabase.
-
+Hello everyone
 ## Features
 - Search novels across NovelFull, NovelBin, AllNovelFull, NovelCool and more
 - Library with reading status, progress tracking, and unread badges
